@@ -5,12 +5,14 @@
 // 默认配置
 let customPreferredIPs = [];
 let customPreferredDomains = [];
-let epd = true;  // 启用优选域名
-let epi = true;  // 启用优选IP
-let egi = true;  // 启用GitHub优选
 let ev = true;   // 启用VLESS协议
 let et = false;  // 启用Trojan协议
 let vm = false;  // 启用VMess协议
+
+// 上游取数与缓存参数
+const UPSTREAM_TIMEOUT_MS = 6000;      // 单个上游请求超时
+const UPSTREAM_CACHE_TTL = 600;        // 上游结果缓存秒数（10 分钟）
+const EMPTY_CACHE_TTL = 60;            // 取到空结果时的短缓存秒数，避免每个请求都等超时
 let scu = 'https://url.v1.mk/sub';  // 订阅转换地址
 // ECH (Encrypted Client Hello)
 let enableECH = false;
@@ -52,6 +54,74 @@ async function md5Hex(text) {
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// 带超时的 fetch，避免单个上游卡住整个订阅请求
+function fetchWithTimeout(url, options = {}, timeoutMs = UPSTREAM_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    return fetch(url, { ...options, signal: controller.signal })
+        .finally(() => clearTimeout(timeoutId));
+}
+
+// 上游结果缓存：isolate 内存 + Cache API 两级
+const upstreamMemoryCache = new Map();
+
+function setMemoryCache(key, value, ttlSeconds) {
+    if (upstreamMemoryCache.size > 200 && !upstreamMemoryCache.has(key)) {
+        // 简单淘汰最早写入的条目，防止用户自定义 URL 撑大内存
+        upstreamMemoryCache.delete(upstreamMemoryCache.keys().next().value);
+    }
+    upstreamMemoryCache.set(key, { value, expires: Date.now() + ttlSeconds * 1000 });
+}
+
+async function cachedUpstream(key, ctx, loader, ttlSeconds = UPSTREAM_CACHE_TTL) {
+    const hit = upstreamMemoryCache.get(key);
+    if (hit && hit.expires > Date.now()) return hit.value;
+
+    // 同一个 key 并发请求时共享同一个 Promise，避免重复回源
+    const promise = (async () => {
+        let cacheUrl = null;
+        try {
+            cacheUrl = `https://yx-auto-cache.internal/${await md5Hex(key)}`;
+        } catch (e) { /* 无法计算缓存 key 时跳过 Cache API */ }
+
+        if (cacheUrl && typeof caches !== 'undefined' && caches.default) {
+            try {
+                const cached = await caches.default.match(cacheUrl);
+                if (cached) return await cached.json();
+            } catch (e) { /* 缓存读取失败直接回源 */ }
+        }
+
+        const data = await loader();
+
+        // 空结果不入 Cache API，避免源故障时被长期缓存
+        const cacheable = !Array.isArray(data) || data.length > 0;
+        if (cacheable && cacheUrl && typeof caches !== 'undefined' && caches.default) {
+            try {
+                const put = caches.default.put(cacheUrl, new Response(JSON.stringify(data), {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Cache-Control': `max-age=${ttlSeconds}`
+                    }
+                }));
+                if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(put.catch(() => {}));
+                else await put;
+            } catch (e) { /* 缓存写入失败不影响本次结果 */ }
+        }
+        return data;
+    })();
+
+    setMemoryCache(key, promise, ttlSeconds);
+    promise.then((data) => {
+        // 空结果只短暂缓存，源恢复后能尽快拿到数据
+        if (Array.isArray(data) && data.length === 0) {
+            setMemoryCache(key, data, Math.min(EMPTY_CACHE_TTL, ttlSeconds));
+        }
+    }, () => {
+        if (upstreamMemoryCache.get(key)?.value === promise) upstreamMemoryCache.delete(key);
+    });
+    return promise;
+}
+
 // 获取动态IP列表（支持IPv4/IPv6和运营商筛选）
 async function fetchDynamicIPs(ipv4Enabled = true, ipv6Enabled = true, ispMobile = true, ispUnicom = true, ispTelecom = true) {
     const ispNames = {
@@ -66,7 +136,7 @@ async function fetchDynamicIPs(ipv4Enabled = true, ipv6Enabled = true, ispMobile
         const time = String(Date.now());
         const inner = await md5Hex(atob('RGRsVHh0TjBzVU91'));
         const key = await md5Hex(inner + atob('NzBjbG91ZGZsYXJlYXBpa2V5') + time);
-        const response = await fetch(`${atob('aHR0cHM6Ly9hcGkudW91aW4uY29tL2luZGV4LnBocC9pbmRleC9DbG91ZGZsYXJl')}?key=${key}&time=${time}`, {
+        const response = await fetchWithTimeout(`${atob('aHR0cHM6Ly9hcGkudW91aW4uY29tL2luZGV4LnBocC9pbmRleC9DbG91ZGZsYXJl')}?key=${key}&time=${time}`, {
             headers: { 'User-Agent': 'Mozilla/5.0' }
         });
         if (!response.ok) return [];
@@ -117,10 +187,7 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) 
     const results = new Set();
     await Promise.allSettled(urls.map(async (url) => {
         try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 超时时间);
-            const response = await fetch(url, { signal: controller.signal });
-            clearTimeout(timeoutId);
+            const response = await fetchWithTimeout(url, {}, 超时时间);
             let text = '';
             try {
                 const buffer = await response.arrayBuffer();
@@ -218,7 +285,9 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) 
 async function fetchAndParseNewIPs(piu) {
     const url = piu || defaultIPURL;
     try {
-        const response = await fetch(url);
+        const response = await fetchWithTimeout(url, {
+            cf: { cacheTtl: UPSTREAM_CACHE_TTL, cacheEverything: true }
+        });
         if (!response.ok) return [];
         const text = await response.text();
         const results = [];
@@ -241,6 +310,52 @@ async function fetchAndParseNewIPs(piu) {
     } catch (error) {
         return [];
     }
+}
+
+// 解析 "地址[:端口][#备注]" 形式的条目
+function parsePreferredAddresses(addresses) {
+    // 统一正则: 匹配 域名/IPv4/IPv6地址 + 可选端口 + 可选备注
+    const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
+    const list = [];
+    for (const 原始地址 of addresses) {
+        const match = 原始地址.match(regex);
+        if (!match) continue;
+        const 节点地址 = match[1].replace(/[\[\]]/g, ''); // 移除IPv6的方括号
+        list.push({
+            ip: 节点地址,
+            port: parseInt(match[2] || 443),
+            name: match[3] || 节点地址
+        });
+    }
+    return list;
+}
+
+// 获取 GitHub优选/优选API 的 IP 列表，统一返回 [{ip, port, name}]
+async function fetchEGIPreferredIPs(piu) {
+    // 单条优选API URL
+    if (piu && piu.toLowerCase().startsWith('https://')) {
+        return parsePreferredAddresses(await 请求优选API([piu]));
+    }
+
+    // 多行混合文本：优选API URL + IP 列表
+    if (piu && piu.includes('\n')) {
+        const 完整优选列表 = await 整理成数组(piu);
+        const 优选API = [], 优选IP = [];
+        for (const 元素 of 完整优选列表) {
+            if (元素.toLowerCase().startsWith('https://')) {
+                优选API.push(元素);
+            } else if (!元素.toLowerCase().includes('://')) {
+                优选IP.push(元素);
+            }
+        }
+        if (优选API.length > 0) {
+            优选IP.push(...await 请求优选API(优选API));
+        }
+        return parsePreferredAddresses(优选IP);
+    }
+
+    // 普通 URL（默认 GitHub 列表）
+    return await fetchAndParseNewIPs(piu);
 }
 
 // 生成VLESS链接
@@ -485,7 +600,7 @@ function generateLinksFromNewIPs(list, user, workerDomain, customPath = '/', ech
 }
 
 // 生成订阅内容
-async function handleSubscriptionRequest(request, user, customDomain, piu, ipv4Enabled, ipv6Enabled, ispMobile, ispUnicom, ispTelecom, evEnabled, etEnabled, vmEnabled, disableNonTLS, customPath, echConfig = null) {
+async function handleSubscriptionRequest(request, ctx, user, customDomain, piu, ipv4Enabled, ipv6Enabled, ispMobile, ispUnicom, ispTelecom, evEnabled, etEnabled, vmEnabled, disableNonTLS, customPath, echConfig, epd, epi, egi) {
     const url = new URL(request.url);
     const finalLinks = [];
     const workerDomain = url.hostname;  // workerDomain始终是请求的hostname
@@ -509,6 +624,25 @@ async function handleSubscriptionRequest(request, user, customDomain, piu, ipv4E
         }
     }
 
+    // 先并行启动两个上游取数，避免串行等待
+    const dynamicIPsPromise = epi
+        ? cachedUpstream(
+            `dynamic:${ipv4Enabled}:${ipv6Enabled}:${ispMobile}:${ispUnicom}:${ispTelecom}`,
+            ctx,
+            () => fetchDynamicIPs(ipv4Enabled, ipv6Enabled, ispMobile, ispUnicom, ispTelecom)
+        ).catch((error) => {
+            console.error('获取动态IP失败:', error);
+            return [];
+        })
+        : null;
+
+    const egiIPsPromise = egi
+        ? cachedUpstream(`egi:${piu || ''}`, ctx, () => fetchEGIPreferredIPs(piu)).catch((error) => {
+            console.error('获取优选IP失败:', error);
+            return [];
+        })
+        : null;
+
     // 原生地址
     const nativeList = [{ ip: workerDomain, isp: '原生地址' }];
     await addNodesFromList(nativeList);
@@ -519,117 +653,24 @@ async function handleSubscriptionRequest(request, user, customDomain, piu, ipv4E
         await addNodesFromList(domainList);
     }
 
-    // 优选IP
-    if (epi) {
-        try {
-            const dynamicIPList = await fetchDynamicIPs(ipv4Enabled, ipv6Enabled, ispMobile, ispUnicom, ispTelecom);
-            if (dynamicIPList.length > 0) {
-                await addNodesFromList(dynamicIPList);
-            }
-        } catch (error) {
-            console.error('获取动态IP失败:', error);
+    // 优选IP（取数已在上面并行启动，这里只等结果）
+    if (dynamicIPsPromise) {
+        const dynamicIPList = await dynamicIPsPromise;
+        if (dynamicIPList.length > 0) {
+            await addNodesFromList(dynamicIPList);
         }
     }
 
-    // GitHub优选 / 优选API
-    if (egi) {
-        try {
-            // 检查是否是优选API URL（以https://开头）
-            if (piu && piu.toLowerCase().startsWith('https://')) {
-                // 从优选API获取IP列表
-                const 优选API的IP = await 请求优选API([piu]);
-                if (优选API的IP && 优选API的IP.length > 0) {
-                    // 解析IP字符串格式：IP:端口#备注
-                    const IP列表 = 优选API的IP.map(原始地址 => {
-                        // 统一正则: 匹配 域名/IPv4/IPv6地址 + 可选端口 + 可选备注
-                        const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
-                        const match = 原始地址.match(regex);
+    // GitHub优选 / 优选API（取数已在上面并行启动，这里只等结果）
+    if (egiIPsPromise) {
+        const IP列表 = await egiIPsPromise;
+        if (IP列表.length > 0) {
+            const hasProtocol = evEnabled || etEnabled || vmEnabled;
+            const useVL = hasProtocol ? evEnabled : true;
 
-                        if (match) {
-                            const 节点地址 = match[1].replace(/[\[\]]/g, ''); // 移除IPv6的方括号
-                            const 节点端口 = match[2] || 443;
-                            const 节点备注 = match[3] || 节点地址;
-                            return {
-                                ip: 节点地址,
-                                port: parseInt(节点端口),
-                                name: 节点备注
-                            };
-                        }
-                        return null;
-                    }).filter(item => item !== null);
-                    
-                    if (IP列表.length > 0) {
-                        const hasProtocol = evEnabled || etEnabled || vmEnabled;
-                        const useVL = hasProtocol ? evEnabled : true;
-                        
-                        if (useVL) {
-                            finalLinks.push(...generateLinksFromNewIPs(IP列表, user, nodeDomain, wsPath, echConfig));
-                        }
-                    }
-                }
-            } else if (piu && piu.includes('\n')) {
-                // 支持多行文本，包含混合格式（优选API URL + IP列表）
-                const 完整优选列表 = await 整理成数组(piu);
-                const 优选API = [], 优选IP = [], 其他节点 = [];
-                
-                for (const 元素 of 完整优选列表) {
-                    if (元素.toLowerCase().startsWith('https://')) {
-                        优选API.push(元素);
-                    } else if (元素.toLowerCase().includes('://')) {
-                        其他节点.push(元素);
-                    } else {
-                        优选IP.push(元素);
-                    }
-                }
-                
-                // 从优选API获取IP
-                if (优选API.length > 0) {
-                    const 优选API的IP = await 请求优选API(优选API);
-                    优选IP.push(...优选API的IP);
-                }
-                
-                // 解析所有IP并生成节点
-                if (优选IP.length > 0) {
-                    const IP列表 = 优选IP.map(原始地址 => {
-                        const regex = /^(\[[\da-fA-F:]+\]|[\d.]+|[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*)(?::(\d+))?(?:#(.+))?$/;
-                        const match = 原始地址.match(regex);
-
-                        if (match) {
-                            const 节点地址 = match[1].replace(/[\[\]]/g, '');
-                            const 节点端口 = match[2] || 443;
-                            const 节点备注 = match[3] || 节点地址;
-                            return {
-                                ip: 节点地址,
-                                port: parseInt(节点端口),
-                                name: 节点备注
-                            };
-                        }
-                        return null;
-                    }).filter(item => item !== null);
-                    
-                    if (IP列表.length > 0) {
-                        const hasProtocol = evEnabled || etEnabled || vmEnabled;
-                        const useVL = hasProtocol ? evEnabled : true;
-                        
-                        if (useVL) {
-                            finalLinks.push(...generateLinksFromNewIPs(IP列表, user, nodeDomain, wsPath, echConfig));
-                        }
-                    }
-                }
-            } else {
-                // 原有的GitHub优选逻辑（单URL）
-                const newIPList = await fetchAndParseNewIPs(piu);
-                if (newIPList.length > 0) {
-                    const hasProtocol = evEnabled || etEnabled || vmEnabled;
-                    const useVL = hasProtocol ? evEnabled : true;
-                    
-                    if (useVL) {
-                        finalLinks.push(...generateLinksFromNewIPs(newIPList, user, nodeDomain, wsPath, echConfig));
-                    }
-                }
+            if (useVL) {
+                finalLinks.push(...generateLinksFromNewIPs(IP列表, user, nodeDomain, wsPath, echConfig));
             }
-        } catch (error) {
-            console.error('获取优选IP失败:', error);
         }
     }
 
@@ -1647,10 +1688,10 @@ export default {
                 return new Response('缺少域名参数', { status: 400 });
             }
             
-            // 从URL参数获取配置
-            epd = url.searchParams.get('epd') !== 'no';
-            epi = url.searchParams.get('epi') !== 'no';
-            egi = url.searchParams.get('egi') !== 'no';
+            // 从URL参数获取配置（按请求传递，避免并发请求互相污染模块级变量）
+            const epdEnabled = url.searchParams.get('epd') !== 'no';
+            const epiEnabled = url.searchParams.get('epi') !== 'no';
+            const egiEnabled = url.searchParams.get('egi') !== 'no';
             const piu = url.searchParams.get('piu') || defaultIPURL;
             
             // 协议选择
@@ -1679,7 +1720,7 @@ export default {
             // 自定义路径
             const customPath = url.searchParams.get('path') || '/';
 
-            return await handleSubscriptionRequest(request, uuid, domain, piu, ipv4Enabled, ipv6Enabled, ispMobile, ispUnicom, ispTelecom, evEnabled, etEnabled, vmEnabled, disableNonTLS, customPath, echConfig);
+            return await handleSubscriptionRequest(request, ctx, uuid, domain, piu, ipv4Enabled, ipv6Enabled, ispMobile, ispUnicom, ispTelecom, evEnabled, etEnabled, vmEnabled, disableNonTLS, customPath, echConfig, epdEnabled, epiEnabled, egiEnabled);
         }
         
         return new Response('Not Found', { status: 404 });
