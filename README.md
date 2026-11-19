@@ -27,6 +27,8 @@ GitHub: https://github.com/byJoey/yx-auto
 
 传入 `piu` 后只使用自定义来源（支持单个 URL 或多行文本混合）。
 
+节点名统一为「来源/运营商 + 两位序号」，例如 `上海电信01`、`联通03`、`IPDB05`，不再携带源列表里的速度、延迟等原始备注。动态 IP 节点命名为「运营商动态+序号」（如 `电信动态01`）。
+
 ## 部署
 
 1. 去Cloudflare Dashboard，找到Workers & Pages

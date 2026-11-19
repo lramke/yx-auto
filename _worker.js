@@ -45,33 +45,41 @@ const defaultIPURL = 'https://raw.githubusercontent.com/qwer-search/bestip/refs/
 const defaultIPSources = [
     {
         name: '上海电信',
+        label: '上海电信',
         url: 'https://raw.githubusercontent.com/ahang39/router/refs/heads/main/all.txt', // 每日自动更新
         isp: 'telecom',
         cap: 10
     },
     {
         name: '三网优选',
+        label: '三网',
         url: 'https://raw.githubusercontent.com/yuanxiawan/cfipv4db/refs/heads/main/cfip.csv', // 约 30 分钟更新
         format: 'isp-csv',
         cap: 15
     },
     {
         name: 'IPDB优选',
+        label: 'IPDB',
         url: 'https://raw.githubusercontent.com/ymyuuu/IPDB/refs/heads/main/BestCF/bestcfv4.txt', // 每日多次
         cap: 10
     },
     {
         name: 'BestCFip',
+        label: 'BestCFip',
         url: 'https://raw.githubusercontent.com/joname1/BestCFip/refs/heads/main/ipv4.txt', // 每日多次
         cap: 15,
         skipLines: /^ipv4\.list\.updated\.at/i
     },
     {
         name: 'GitHub优选',
+        label: 'GitHub',
         url: defaultIPURL,
         cap: 10
     }
 ];
+
+// 运营商字段到节点名前缀的映射
+const ISP_LABELS = { mobile: '移动', unicom: '联通', telecom: '电信' };
 
 // UUID验证
 function isValidUUID(str) {
@@ -198,8 +206,9 @@ async function fetchDynamicIPs(ipv4Enabled = true, ipv6Enabled = true, ispMobile
                 const ip = String(entry && entry.ip || '').trim();
                 if (!ip) continue;
                 index++;
-                // 接口不返回机房信息，用序号占位避免同线路节点重名
-                results.push({ isp: isp, ip: ip, colo: String(index).padStart(2, '0') });
+                // 统一命名：运营商 + 动态 + 序号，接口不返回机房信息
+                const label = groupKey === 'ipv6' ? 'IPv6' : isp;
+                results.push({ ip: ip, name: `${label}动态${String(index).padStart(2, '0')}` });
             }
         }
         return results;
@@ -439,7 +448,7 @@ function parseAddressLine(raw, defaultName, defaultPort = 443) {
     };
 }
 
-// 解析普通地址列表（每行一个地址）
+// 解析普通地址列表（每行一个地址；运营商由来源配置统一决定）
 function parseAddressList(text, source) {
     const list = [];
     for (const raw of text.split('\n')) {
@@ -448,7 +457,7 @@ function parseAddressList(text, source) {
         if (source.skipLines && source.skipLines.test(line)) continue;
         const parsed = parseAddressLine(line, source.name);
         if (!parsed) continue;
-        list.push({ ...parsed, isp: source.isp || 'all' });
+        list.push(parsed);
     }
     return list;
 }
@@ -567,16 +576,16 @@ async function fetchDefaultPreferredIPs(ctx, opts) {
             const key = `${entry.ip.toLowerCase()}:${entry.port}`;
             if (seen.has(key)) continue;
 
-            // 同名节点会让 Clash 配置冲突，重名时补序号
-            const baseName = entry.name || entry.ip;
-            const count = (nameCount.get(baseName) || 0) + 1;
-            nameCount.set(baseName, count);
+            // 统一命名：来源/运营商 + 两位序号，避免各源备注风格不一
+            const label = ISP_LABELS[entry.isp] || source.label || source.name;
+            const index = (nameCount.get(label) || 0) + 1;
+            nameCount.set(label, index);
 
             seen.add(key);
             merged.push({
                 ip: entry.ip,
                 port: entry.port,
-                name: count > 1 ? `${baseName}-${count}` : baseName
+                name: `${label}${String(index).padStart(2, '0')}`
             });
             if (++taken >= cap) break;
         }
@@ -596,7 +605,7 @@ function generateLinksFromSource(list, user, workerDomain, disableNonTLS = false
     const proto = 'vless';
 
     list.forEach(item => {
-        let nodeNameBase = item.isp ? item.isp.replace(/\s/g, '_') : (item.name || item.domain || item.ip);
+        let nodeNameBase = item.name || (item.isp ? item.isp.replace(/\s/g, '_') : (item.domain || item.ip));
         if (item.colo && item.colo.trim()) {
             nodeNameBase = `${nodeNameBase}-${item.colo.trim()}`;
         }
@@ -666,7 +675,7 @@ async function generateTrojanLinksFromSource(list, user, workerDomain, disableNo
     const password = user;  // Trojan使用UUID作为密码
 
     list.forEach(item => {
-        let nodeNameBase = item.isp ? item.isp.replace(/\s/g, '_') : (item.name || item.domain || item.ip);
+        let nodeNameBase = item.name || (item.isp ? item.isp.replace(/\s/g, '_') : (item.domain || item.ip));
         if (item.colo && item.colo.trim()) {
             nodeNameBase = `${nodeNameBase}-${item.colo.trim()}`;
         }
@@ -735,7 +744,7 @@ function generateVMessLinksFromSource(list, user, workerDomain, disableNonTLS = 
     const wsPath = customPath || '/';
 
     list.forEach(item => {
-        let nodeNameBase = item.isp ? item.isp.replace(/\s/g, '_') : (item.name || item.domain || item.ip);
+        let nodeNameBase = item.name || (item.isp ? item.isp.replace(/\s/g, '_') : (item.domain || item.ip));
         if (item.colo && item.colo.trim()) {
             nodeNameBase = `${nodeNameBase}-${item.colo.trim()}`;
         }
