@@ -7,11 +7,25 @@ GitHub: https://github.com/byJoey/yx-auto
 ## 主要功能
 
 - 优选域名：内置了一些常用的优选域名
-- 优选IP：从wetest.vip获取动态IP，支持IPv4/IPv6
-- GitHub优选：可以从GitHub仓库拉取IP列表
+- 优选IP：从动态 IP 接口获取，支持IPv4/IPv6
+- GitHub优选：内置多个 GitHub 定时更新源，也可以自定义仓库地址
 - 多协议支持：VLESS、Trojan、VMess
 - 多客户端格式：Clash、Surge、Quantumult X等
 - 运营商筛选：可以按移动/联通/电信筛选
+
+## 默认优选IP来源
+
+`piu` 参数留空时，会并行拉取以下 GitHub 定时更新源，结果缓存 10 分钟，并在生成节点时去重、限制每个源的条数：
+
+| 来源 | 更新频率 | 说明 |
+| --- | --- | --- |
+| [ahang39/router](https://github.com/ahang39/router) | 每日 | 上海电信实测优选 |
+| [yuanxiawan/cfipv4db](https://github.com/yuanxiawan/cfipv4db) | 约 30 分钟 | 移动/联通/电信三网，按时延排序，受运营商筛选控制 |
+| [ymyuuu/IPDB](https://github.com/ymyuuu/IPDB) | 每日多次 | 反代优选 IP 库 |
+| [joname1/BestCFip](https://github.com/joname1/BestCFip) | 每日多次 | 自动采集优选 IP |
+| [qwer-search/bestip](https://github.com/qwer-search/bestip) | 不定期 | 原有的默认列表 |
+
+传入 `piu` 后只使用自定义来源（支持单个 URL 或多行文本混合）。
 
 ## 部署
 
@@ -53,7 +67,7 @@ https://your-worker.workers.dev/{UUID}/sub?domain=your-domain.com&epd=yes&epi=ye
 - `epd` - 启用优选域名（默认yes）
 - `epi` - 启用优选IP（默认yes）
 - `egi` - 启用GitHub优选（默认yes）
-- `piu` - 自定义IP来源URL（可选）
+- `piu` - 自定义IP来源URL（可选，留空使用内置的多个定时更新源）
 - `ev` - 启用VLESS（默认yes）
 - `et` - 启用Trojan（默认no）
 - `mess` - 启用VMess（默认no，注意不是vm，会被屏蔽）

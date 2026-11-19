@@ -37,6 +37,42 @@ const directDomains = [
 // 默认优选IP来源URL
 const defaultIPURL = 'https://raw.githubusercontent.com/qwer-search/bestip/refs/heads/main/kejilandbestip.txt';
 
+// 内置默认优选IP来源（均为 GitHub 定时更新）
+// - isp：整份列表适用的运营商（缺省 all），用于响应 ipv4/ipv6 与运营商开关
+// - cap：每个源最多取多少条，避免订阅节点过多
+// - format：isp-csv 表示带“线路名称”列的 CSV，其余按地址行解析
+// - skipLines：跳过列表里的表头/说明行
+const defaultIPSources = [
+    {
+        name: '上海电信',
+        url: 'https://raw.githubusercontent.com/ahang39/router/refs/heads/main/all.txt', // 每日自动更新
+        isp: 'telecom',
+        cap: 10
+    },
+    {
+        name: '三网优选',
+        url: 'https://raw.githubusercontent.com/yuanxiawan/cfipv4db/refs/heads/main/cfip.csv', // 约 30 分钟更新
+        format: 'isp-csv',
+        cap: 15
+    },
+    {
+        name: 'IPDB优选',
+        url: 'https://raw.githubusercontent.com/ymyuuu/IPDB/refs/heads/main/BestCF/bestcfv4.txt', // 每日多次
+        cap: 10
+    },
+    {
+        name: 'BestCFip',
+        url: 'https://raw.githubusercontent.com/joname1/BestCFip/refs/heads/main/ipv4.txt', // 每日多次
+        cap: 15,
+        skipLines: /^ipv4\.list\.updated\.at/i
+    },
+    {
+        name: 'GitHub优选',
+        url: defaultIPURL,
+        cap: 10
+    }
+];
+
 // UUID验证
 function isValidUUID(str) {
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -358,6 +394,197 @@ async function fetchEGIPreferredIPs(piu) {
     return await fetchAndParseNewIPs(piu);
 }
 
+// 解析单行地址：支持 ip、ip:端口、ip#备注、ip:端口#备注 和 [IPv6]:端口#备注
+function parseAddressLine(raw, defaultName, defaultPort = 443) {
+    let line = String(raw || '').trim();
+    if (!line || line.startsWith('#') || line.includes(',')) return null;
+
+    let remark = '';
+    const hash = line.indexOf('#');
+    if (hash > -1) {
+        remark = line.slice(hash + 1).trim();
+        line = line.slice(0, hash).trim();
+    }
+    if (!line) return null;
+
+    let host = '';
+    let port = '';
+    if (line.startsWith('[')) {
+        const match = line.match(/^\[([^\]]+)\](?::(\d+))?$/);
+        if (!match) return null;
+        host = match[1];
+        port = match[2] || '';
+    } else if ((line.match(/:/g) || []).length > 1) {
+        // 无方括号的 IPv6 地址，不支持再带端口
+        host = line;
+    } else {
+        const match = line.match(/^([^:\s]+)(?::(\d+))?$/);
+        if (!match) return null;
+        host = match[1];
+        port = match[2] || '';
+    }
+
+    const isV6 = host.includes(':');
+    const isV4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) && host.split('.').every(n => Number(n) <= 255);
+    const isDomain = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)+$/.test(host);
+    if (isV6 ? !/^[0-9a-fA-F:]+$/.test(host) : !isV4 && !isDomain) return null;
+
+    const parsedPort = port ? parseInt(port, 10) : defaultPort;
+    if (!Number.isFinite(parsedPort) || parsedPort <= 0 || parsedPort > 65535) return null;
+
+    return {
+        ip: host,
+        port: parsedPort,
+        name: remark || defaultName || host
+    };
+}
+
+// 解析普通地址列表（每行一个地址）
+function parseAddressList(text, source) {
+    const list = [];
+    for (const raw of text.split('\n')) {
+        const line = raw.trim();
+        if (!line) continue;
+        if (source.skipLines && source.skipLines.test(line)) continue;
+        const parsed = parseAddressLine(line, source.name);
+        if (!parsed) continue;
+        list.push({ ...parsed, isp: source.isp || 'all' });
+    }
+    return list;
+}
+
+// 解析带“线路名称”列的 CSV（如 yuanxiawan/cfipv4db），并按时延排序
+function parseIspCsvSource(text, source) {
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) return [];
+
+    const headers = lines[0].split(',').map(h => h.trim());
+    const ipIdx = headers.findIndex(h => /优选地址|IP地址|^IP$/i.test(h));
+    const ispIdx = headers.findIndex(h => /线路|运营商/.test(h));
+    const portIdx = headers.findIndex(h => h === '端口');
+    const delayIdx = headers.findIndex(h => /延迟/.test(h));
+    const speedIdx = headers.findIndex(h => /速度/.test(h));
+    const coloIdx = headers.findIndex(h => /数据中心|^colo$/i.test(h));
+    if (ipIdx === -1) return [];
+
+    const ispMap = { 移动: 'mobile', 联通: 'unicom', 电信: 'telecom' };
+    const list = [];
+
+    for (const line of lines.slice(1)) {
+        const cols = line.split(',').map(c => c.trim());
+        const rawIP = cols[ipIdx];
+        if (!rawIP) continue;
+
+        const port = portIdx > -1 && cols[portIdx] ? parseInt(cols[portIdx], 10) : 443;
+        let addressLine;
+        if (rawIP.startsWith('[') || (rawIP.match(/:/g) || []).length === 1 && /:\d+$/.test(rawIP)) {
+            addressLine = rawIP;
+        } else if (rawIP.includes(':')) {
+            addressLine = `[${rawIP}]:${port}`;
+        } else {
+            addressLine = `${rawIP}:${port}`;
+        }
+
+        const parsed = parseAddressLine(addressLine, source.name, port);
+        if (!parsed) continue;
+
+        const rawIsp = ispIdx > -1 ? cols[ispIdx] : '';
+        const delay = delayIdx > -1 ? parseInt(String(cols[delayIdx]).replace(/[^\d]/g, ''), 10) : NaN;
+        const speed = speedIdx > -1 ? cols[speedIdx] : '';
+        const colo = coloIdx > -1 ? cols[coloIdx] : '';
+        const nameParts = [rawIsp || source.name];
+        if (Number.isFinite(delay)) nameParts.push(`${delay}ms`);
+        if (speed) nameParts.push(speed);
+        if (colo) nameParts.push(colo);
+
+        list.push({
+            ...parsed,
+            name: nameParts.join(' '),
+            isp: ispMap[rawIsp] || 'all',
+            sortKey: Number.isFinite(delay) ? delay : 1e9
+        });
+    }
+
+    list.sort((a, b) => a.sortKey - b.sortKey);
+    return list.map(({ sortKey, ...entry }) => entry);
+}
+
+// 拉取单个默认源
+async function fetchDefaultIPSource(source) {
+    try {
+        const response = await fetchWithTimeout(source.url, {
+            cf: { cacheTtl: UPSTREAM_CACHE_TTL, cacheEverything: true }
+        });
+        if (!response.ok) return [];
+        const text = await response.text();
+        return source.format === 'isp-csv'
+            ? parseIspCsvSource(text, source)
+            : parseAddressList(text, source);
+    } catch (error) {
+        return [];
+    }
+}
+
+// 拉取全部内置默认源并按当前请求的运营商/IP 版本筛选、去重
+async function fetchDefaultPreferredIPs(ctx, opts) {
+    const { ipv4Enabled, ipv6Enabled, ispMobile, ispUnicom, ispTelecom } = opts;
+
+    const ispAllowed = (isp) => {
+        if (isp === 'mobile') return ispMobile;
+        if (isp === 'unicom') return ispUnicom;
+        if (isp === 'telecom') return ispTelecom;
+        return true;
+    };
+    const familyAllowed = (ip) => {
+        if (ip.includes(':')) return ipv6Enabled;
+        if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip)) return ipv4Enabled;
+        return true; // 域名
+    };
+
+    const sources = defaultIPSources.filter(source => ispAllowed(source.isp || 'all'));
+    const results = await Promise.all(sources.map(source =>
+        cachedUpstream(`default-src:v1:${source.url}`, ctx, () => fetchDefaultIPSource(source))
+            .catch((error) => {
+                console.error('获取默认优选源失败:', source.name, error);
+                return [];
+            })
+    ));
+
+    const seen = new Set();
+    const nameCount = new Map();
+    const merged = [];
+
+    results.forEach((entries, index) => {
+        const source = sources[index];
+        const cap = source.cap || 15;
+        let taken = 0;
+
+        for (const entry of entries) {
+            if (!entry || !entry.ip) continue;
+            if (!ispAllowed(entry.isp || source.isp || 'all')) continue;
+            if (!familyAllowed(entry.ip)) continue;
+
+            const key = `${entry.ip.toLowerCase()}:${entry.port}`;
+            if (seen.has(key)) continue;
+
+            // 同名节点会让 Clash 配置冲突，重名时补序号
+            const baseName = entry.name || entry.ip;
+            const count = (nameCount.get(baseName) || 0) + 1;
+            nameCount.set(baseName, count);
+
+            seen.add(key);
+            merged.push({
+                ip: entry.ip,
+                port: entry.port,
+                name: count > 1 ? `${baseName}-${count}` : baseName
+            });
+            if (++taken >= cap) break;
+        }
+    });
+
+    return merged;
+}
+
 // 生成VLESS链接
 function generateLinksFromSource(list, user, workerDomain, disableNonTLS = false, customPath = '/', echConfig = null) {
     const CF_HTTP_PORTS = [80, 8080, 8880, 2052, 2082, 2086, 2095];
@@ -637,7 +864,10 @@ async function handleSubscriptionRequest(request, ctx, user, customDomain, piu, 
         : null;
 
     const egiIPsPromise = egi
-        ? cachedUpstream(`egi:${piu || ''}`, ctx, () => fetchEGIPreferredIPs(piu)).catch((error) => {
+        ? (piu
+            ? cachedUpstream(`egi:${piu}`, ctx, () => fetchEGIPreferredIPs(piu))
+            : fetchDefaultPreferredIPs(ctx, { ipv4Enabled, ipv6Enabled, ispMobile, ispUnicom, ispTelecom })
+        ).catch((error) => {
             console.error('获取优选IP失败:', error);
             return [];
         })
@@ -1280,7 +1510,7 @@ function generateHomePage(scuValue) {
             <div class="form-group" id="githubUrlGroup" style="margin-top: 12px;">
                 <label>GitHub优选URL（可选）</label>
                 <input type="text" id="githubUrl" placeholder="留空则使用默认地址" style="font-size: 15px;">
-                <small style="display: block; margin-top: 6px; color: #86868b; font-size: 13px;">自定义优选IP列表来源URL，留空则使用默认地址</small>
+                <small style="display: block; margin-top: 6px; color: #86868b; font-size: 13px;">自定义优选IP列表来源URL，留空则使用内置的多个定时更新源（含上海电信、三网优选等）</small>
             </div>
             
             <div class="form-group" style="margin-top: 24px;">
@@ -1692,7 +1922,7 @@ export default {
             const epdEnabled = url.searchParams.get('epd') !== 'no';
             const epiEnabled = url.searchParams.get('epi') !== 'no';
             const egiEnabled = url.searchParams.get('egi') !== 'no';
-            const piu = url.searchParams.get('piu') || defaultIPURL;
+            const piu = url.searchParams.get('piu');
             
             // 协议选择
             const evEnabled = url.searchParams.get('ev') === 'yes' || (url.searchParams.get('ev') === null && ev);
