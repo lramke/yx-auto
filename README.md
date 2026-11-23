@@ -7,15 +7,15 @@ GitHub: https://github.com/byJoey/yx-auto
 ## 主要功能
 
 - 优选域名：内置了一些常用的优选域名
-- 优选IP：从动态 IP 接口获取，支持IPv4/IPv6
-- GitHub优选：内置多个 GitHub 定时更新源，也可以自定义仓库地址
+- 优选IP：内置多个 GitHub 定时源，支持IPv4/IPv6
+- GitHub优选：可自定义一个或多个来源 URL，与内置源合并去重
 - 多协议支持：VLESS、Trojan、VMess
 - 多客户端格式：Clash、Surge、Quantumult X等
 - 运营商筛选：可以按移动/联通/电信筛选
 
 ## 默认优选IP来源
 
-`piu` 参数留空时，会并行拉取以下 GitHub 定时更新源，结果缓存 10 分钟，并在生成节点时去重、限制每个源的条数：
+「启用优选IP」开启时会并行拉取以下 GitHub 定时更新源（`egi=yes` 且 `piu` 留空时也会兜底使用），结果缓存 10 分钟，每个源 raw 优先、超时后自动改用 jsDelivr 镜像，并在生成节点时去重、限制每个源的条数：
 
 | 来源 | 更新频率 | 说明 |
 | --- | --- | --- |
@@ -23,11 +23,14 @@ GitHub: https://github.com/byJoey/yx-auto
 | [yuanxiawan/cfipv4db](https://github.com/yuanxiawan/cfipv4db) | 约 30 分钟 | 移动/联通/电信三网，按时延排序，受运营商筛选控制 |
 | [ymyuuu/IPDB](https://github.com/ymyuuu/IPDB) | 每日多次 | 反代优选 IP 库 |
 | [joname1/BestCFip](https://github.com/joname1/BestCFip) | 每日多次 | 自动采集优选 IP |
-| [qwer-search/bestip](https://github.com/qwer-search/bestip) | 不定期 | 原有的默认列表 |
+| [ymyuuu/IPDB v6](https://github.com/ymyuuu/IPDB) | 每日多次 | IPv6 优选列表 |
+| [joname1/BestCFip v6](https://github.com/joname1/BestCFip) | 每日多次 | IPv6 优选列表 |
 
-传入 `piu` 后只使用自定义来源（支持单个 URL 或多行文本混合）。
+传入 `piu` 后使用自定义来源，支持多个 URL（每行一个或英文逗号分隔）与直接粘贴的 `IP:端口#备注`；所有来源合并后按 IP+端口去重，重名节点自动加序号。`egi=no` 时不添加自定义来源。
 
-节点名统一为「来源/运营商 + 两位序号」，例如 `上海电信01`、`联通03`、`IPDB05`，不再携带源列表里的速度、延迟等原始备注。动态 IP 节点命名为「运营商动态+序号」（如 `电信动态01`）。
+内置优选域名已清理为 8 个实测仍解析到 Cloudflare 的域名。
+
+节点名统一为「来源/运营商 + 两位序号」，例如 `上海电信01`、`联通03`、`IPDB05`，不再携带源列表里的速度、延迟等原始备注。
 
 ## 部署
 
@@ -67,9 +70,9 @@ https://your-worker.workers.dev/{UUID}/sub?domain=your-domain.com&epd=yes&epi=ye
 主要参数：
 - `domain` - 你的域名（必填）
 - `epd` - 启用优选域名（默认yes）
-- `epi` - 启用优选IP（默认yes）
-- `egi` - 启用GitHub优选（默认yes）
-- `piu` - 自定义IP来源URL（可选，留空使用内置的多个定时更新源）
+- `epi` - 启用优选IP（内置多源，默认yes）
+- `egi` - 启用GitHub优选/自定义来源（默认yes）
+- `piu` - 自定义来源（可选，支持多个 URL，每行一个或英文逗号分隔；需要 `egi=yes`）
 - `ev` - 启用VLESS（默认yes）
 - `et` - 启用Trojan（默认no）
 - `mess` - 启用VMess（默认no，注意不是vm，会被屏蔽）

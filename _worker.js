@@ -22,20 +22,14 @@ let customECHDomain = 'cloudflare-ech.com';
 // 默认优选域名列表
 const directDomains = [
     { name: "cloudflare.182682.xyz", domain: "cloudflare.182682.xyz" },
-    { domain: "freeyx.cloudflare88.eu.org" },
-    { domain: "bestcf.top" },
     { domain: "cdn.2020111.xyz" },
     { domain: "cf.0sm.com" },
     { domain: "cf.090227.xyz" },
-    { domain: "cf.zhetengsha.eu.org" },
     { domain: "cfip.1323123.xyz" },
     { domain: "cloudflare-ip.mofashi.ltd" },
-    { domain: "cf.877771.xyz" },
-    { domain: "xn--b6gac.eu.org" }
+    { domain: "cdn.tzpro.xyz" },
+    { domain: "cf.877771.xyz" }
 ];
-
-// 默认优选IP来源URL
-const defaultIPURL = 'https://raw.githubusercontent.com/qwer-search/bestip/refs/heads/main/kejilandbestip.txt';
 
 // 内置默认优选IP来源（均为 GitHub 定时更新）
 // - isp：整份列表适用的运营商（缺省 all），用于响应 ipv4/ipv6 与运营商开关
@@ -71,10 +65,17 @@ const defaultIPSources = [
         skipLines: /^ipv4\.list\.updated\.at/i
     },
     {
-        name: 'GitHub优选',
-        label: 'GitHub',
-        url: defaultIPURL,
+        name: 'IPDB优选v6',
+        label: 'IPv6',
+        url: 'https://raw.githubusercontent.com/ymyuuu/IPDB/refs/heads/main/BestCF/bestcfv6.txt', // 每日多次
         cap: 10
+    },
+    {
+        name: 'BestCFip v6',
+        label: 'IPv6',
+        url: 'https://raw.githubusercontent.com/joname1/BestCFip/refs/heads/main/ipv6.txt', // 每日多次
+        cap: 15,
+        skipLines: /^ipv6\.list\.updated\.at/i
     }
 ];
 
@@ -166,64 +167,13 @@ async function cachedUpstream(key, ctx, loader, ttlSeconds = UPSTREAM_CACHE_TTL)
     return promise;
 }
 
-// 获取动态IP列表（支持IPv4/IPv6和运营商筛选）
-async function fetchDynamicIPs(ipv4Enabled = true, ipv6Enabled = true, ispMobile = true, ispUnicom = true, ispTelecom = true) {
-    const ispNames = {
-        ctcc: '电信',
-        cucc: '联通',
-        cmcc: '移动',
-        bgp: '多线',
-        ipv6: 'IPv6'
-    };
-
-    try {
-        const time = String(Date.now());
-        const inner = await md5Hex(atob('RGRsVHh0TjBzVU91'));
-        const key = await md5Hex(inner + atob('NzBjbG91ZGZsYXJlYXBpa2V5') + time);
-        const response = await fetchWithTimeout(`${atob('aHR0cHM6Ly9hcGkudW91aW4uY29tL2luZGV4LnBocC9pbmRleC9DbG91ZGZsYXJl')}?key=${key}&time=${time}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
-        if (!response.ok) return [];
-        const data = await response.json();
-        const groups = data && data.data;
-        if (!groups) return [];
-
-        const results = [];
-        for (const groupKey of Object.keys(ispNames)) {
-            const isIPv6 = groupKey === 'ipv6';
-            if (isIPv6 && !ipv6Enabled) continue;
-            if (!isIPv6 && !ipv4Enabled) continue;
-
-            const isp = ispNames[groupKey];
-            if (isp === '移动' && !ispMobile) continue;
-            if (isp === '联通' && !ispUnicom) continue;
-            if (isp === '电信' && !ispTelecom) continue;
-
-            const group = groups[groupKey];
-            const info = group && Array.isArray(group.info) ? group.info : [];
-            let index = 0;
-            for (const entry of info) {
-                const ip = String(entry && entry.ip || '').trim();
-                if (!ip) continue;
-                index++;
-                // 统一命名：运营商 + 动态 + 序号，接口不返回机房信息
-                const label = groupKey === 'ipv6' ? 'IPv6' : isp;
-                results.push({ ip: ip, name: `${label}动态${String(index).padStart(2, '0')}` });
-            }
-        }
-        return results;
-    } catch (e) {
-        return [];
-    }
+function isIPv4Address(地址) {
+    const 匹配 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(地址);
+    return !!匹配 && 匹配.slice(1).every(段 => Number(段) <= 255);
 }
 
-// 整理成数组
-async function 整理成数组(内容) {
-    var 替换后的内容 = 内容.replace(/[	"'\r\n]+/g, ',').replace(/,+/g, ',');
-    if (替换后的内容.charAt(0) == ',') 替换后的内容 = 替换后的内容.slice(1);
-    if (替换后的内容.charAt(替换后的内容.length - 1) == ',') 替换后的内容 = 替换后的内容.slice(0, 替换后的内容.length - 1);
-    const 地址数组 = 替换后的内容.split(',');
-    return 地址数组;
+function isIPv6Address(地址) {
+    return (地址.match(/:/g) || []).length >= 2 && /^[0-9a-fA-F:]+$/.test(地址) && !地址.includes(':::');
 }
 
 // 请求优选API
@@ -284,21 +234,39 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) 
             if (!isCSV) {
                 lines.forEach(line => {
                     const hashIndex = line.indexOf('#');
-                    const [hostPart, remark] = hashIndex > -1 ? [line.substring(0, hashIndex), line.substring(hashIndex)] : [line, ''];
+                    const hostPart = (hashIndex > -1 ? line.substring(0, hashIndex) : line).trim();
+                    const remark = hashIndex > -1 ? line.substring(hashIndex) : '';
+                    // 跳过“更新于…”说明行，例如 ipv4.list.updated.at#Upd20261123_05:26
+                    if (!isIPv4Address(hostPart) && !isIPv6Address(hostPart) && /^#\s*Upd/i.test(remark)) return;
+                    const port = new URL(url).searchParams.get('port') || 默认端口;
+                    // 裸 IPv6 先补方括号，后续解析才能区分地址与端口
+                    if (isIPv6Address(hostPart) && !hostPart.startsWith('[')) {
+                        results.add(`[${hostPart}]:${port}${remark}`);
+                        return;
+                    }
                     let hasPort = false;
                     if (hostPart.startsWith('[')) {
                         hasPort = /\]:(\d+)$/.test(hostPart);
-                    } else {
+                    } else if (!isIPv6Address(hostPart)) {
                         const colonIndex = hostPart.lastIndexOf(':');
                         hasPort = colonIndex > -1 && /^\d+$/.test(hostPart.substring(colonIndex + 1));
                     }
-                    const port = new URL(url).searchParams.get('port') || 默认端口;
-                    results.add(hasPort ? line : `${hostPart}:${port}${remark}`);
+                    results.add(hasPort ? `${hostPart}${remark}` : `${hostPart}:${port}${remark}`);
                 });
             } else {
                 const headers = lines[0].split(',').map(h => h.trim());
                 const dataLines = lines.slice(1);
-                if (headers.includes('IP地址') && headers.includes('端口') && headers.includes('数据中心')) {
+                if (headers.includes('线路名称') && headers.includes('优选地址')) {
+                    const ipIdx = headers.indexOf('优选地址'), ispIdx = headers.indexOf('线路名称'), dcIdx = headers.indexOf('数据中心');
+                    const port = new URL(url).searchParams.get('port') || 默认端口;
+                    dataLines.forEach(line => {
+                        const cols = line.split(',').map(c => c.trim());
+                        if (!cols[ipIdx]) return;
+                        const wrappedIP = IPV6_PATTERN.test(cols[ipIdx]) ? `[${cols[ipIdx]}]` : cols[ipIdx];
+                        const 备注 = [cols[ispIdx], dcIdx >= 0 ? cols[dcIdx] : ''].filter(Boolean).join('-') || wrappedIP;
+                        results.add(`${wrappedIP}:${port}#${备注}`);
+                    });
+                } else if (headers.includes('IP地址') && headers.includes('端口') && headers.includes('数据中心')) {
                     const ipIdx = headers.indexOf('IP地址'), portIdx = headers.indexOf('端口');
                     const remarkIdx = headers.indexOf('国家') > -1 ? headers.indexOf('国家') :
                         headers.indexOf('城市') > -1 ? headers.indexOf('城市') : headers.indexOf('数据中心');
@@ -326,37 +294,6 @@ async function 请求优选API(urls, 默认端口 = '443', 超时时间 = 3000) 
     return Array.from(results);
 }
 
-// 从GitHub获取优选IP（保留原有功能，同时支持优选API）
-async function fetchAndParseNewIPs(piu) {
-    const url = piu || defaultIPURL;
-    try {
-        const response = await fetchWithTimeout(url, {
-            cf: { cacheTtl: UPSTREAM_CACHE_TTL, cacheEverything: true }
-        });
-        if (!response.ok) return [];
-        const text = await response.text();
-        const results = [];
-        const lines = text.trim().replace(/\r/g, "").split('\n');
-        const regex = /^([^:]+):(\d+)#(.*)$/;
-
-        for (const line of lines) {
-            const trimmedLine = line.trim();
-            if (!trimmedLine) continue;
-            const match = trimmedLine.match(regex);
-            if (match) {
-                results.push({
-                    ip: match[1],
-                    port: parseInt(match[2], 10),
-                    name: match[3].trim() || match[1]
-                });
-            }
-        }
-        return results;
-    } catch (error) {
-        return [];
-    }
-}
-
 // 解析 "地址[:端口][#备注]" 形式的条目
 function parsePreferredAddresses(addresses) {
     // 统一正则: 匹配 域名/IPv4/IPv6地址 + 可选端口 + 可选备注
@@ -375,32 +312,31 @@ function parsePreferredAddresses(addresses) {
     return list;
 }
 
+// 按 IP+端口去重，并给重名节点加序号
+function dedupePreferred(list) {
+    const seen = new Set();
+    const counts = new Map();
+    const out = [];
+    for (const entry of list) {
+        const key = `${String(entry.ip).toLowerCase()}:${entry.port}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const base = entry.name.replace(/\s/g, '_');
+        const n = (counts.get(base) || 0) + 1;
+        counts.set(base, n);
+        out.push({ ...entry, name: n > 1 ? `${base}-${String(n).padStart(2, '0')}` : base });
+    }
+    return out;
+}
+
 // 获取 GitHub优选/优选API 的 IP 列表，统一返回 [{ip, port, name}]
+// 支持单个 URL、多个 URL（换行或逗号分隔），以及直接粘贴的地址
 async function fetchEGIPreferredIPs(piu) {
-    // 单条优选API URL
-    if (piu && piu.toLowerCase().startsWith('https://')) {
-        return parsePreferredAddresses(await 请求优选API([piu]));
-    }
-
-    // 多行混合文本：优选API URL + IP 列表
-    if (piu && piu.includes('\n')) {
-        const 完整优选列表 = await 整理成数组(piu);
-        const 优选API = [], 优选IP = [];
-        for (const 元素 of 完整优选列表) {
-            if (元素.toLowerCase().startsWith('https://')) {
-                优选API.push(元素);
-            } else if (!元素.toLowerCase().includes('://')) {
-                优选IP.push(元素);
-            }
-        }
-        if (优选API.length > 0) {
-            优选IP.push(...await 请求优选API(优选API));
-        }
-        return parsePreferredAddresses(优选IP);
-    }
-
-    // 普通 URL（默认 GitHub 列表）
-    return await fetchAndParseNewIPs(piu);
+    const tokens = String(piu || '').split(/[\r\n\t,]+/).map(part => part.trim()).filter(Boolean);
+    const urls = tokens.filter(part => /^https?:\/\//i.test(part));
+    const inline = tokens.filter(part => !/^https?:\/\//i.test(part));
+    const apiAddresses = urls.length > 0 ? await 请求优选API(urls) : [];
+    return dedupePreferred(parsePreferredAddresses([...apiAddresses, ...inline]));
 }
 
 // 解析单行地址：支持 ip、ip:端口、ip#备注、ip:端口#备注 和 [IPv6]:端口#备注
@@ -518,20 +454,43 @@ function parseIspCsvSource(text, source) {
     return list.map(({ sortKey, ...entry }) => entry);
 }
 
-// 拉取单个默认源
-async function fetchDefaultIPSource(source) {
+// raw.githubusercontent 的 jsDelivr 镜像地址
+function mirrorURL(url) {
     try {
-        const response = await fetchWithTimeout(source.url, {
-            cf: { cacheTtl: UPSTREAM_CACHE_TTL, cacheEverything: true }
-        });
-        if (!response.ok) return [];
-        const text = await response.text();
-        return source.format === 'isp-csv'
-            ? parseIspCsvSource(text, source)
-            : parseAddressList(text, source);
-    } catch (error) {
+        const u = new URL(url);
+        if (u.hostname !== 'raw.githubusercontent.com') return '';
+        const parts = u.pathname.split('/').filter(Boolean);
+        if (parts.length < 5 || parts[2] !== 'refs' || parts[3] !== 'heads') return '';
+        return `https://cdn.jsdelivr.net/gh/${parts[0]}/${parts[1]}@${parts[4]}/${parts.slice(5).join('/')}`;
+    } catch (e) {
+        return '';
+    }
+}
+
+async function fetchSourceText(url, timeoutMs) {
+    const response = await fetchWithTimeout(url, {
+        cf: { cacheTtl: UPSTREAM_CACHE_TTL, cacheEverything: true }
+    }, timeoutMs);
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const text = await response.text();
+    if (!text.trim()) throw new Error('空列表');
+    return text;
+}
+
+// 拉取单个默认源：raw 优先，超时或失败后用 jsDelivr 镜像
+async function fetchDefaultIPSource(source) {
+    const mirror = mirrorURL(source.url);
+    const attempts = [fetchSourceText(source.url, 2500)];
+    if (mirror) attempts.push(fetchSourceText(mirror, 4000));
+    const results = await Promise.allSettled(attempts);
+    const ok = results.find(result => result.status === 'fulfilled');
+    if (!ok) {
+        console.error('默认优选源失败:', source.name, results.map(result => result.reason && result.reason.message).join(' | '));
         return [];
     }
+    return source.format === 'isp-csv'
+        ? parseIspCsvSource(ok.value, source)
+        : parseAddressList(ok.value, source);
 }
 
 // 拉取全部内置默认源并按当前请求的运营商/IP 版本筛选、去重
@@ -817,18 +776,19 @@ function generateLinksFromNewIPs(list, user, workerDomain, customPath = '/', ech
     list.forEach(item => {
         const nodeName = item.name.replace(/\s/g, '_');
         const port = item.port;
+        const safeIP = item.ip.includes(':') ? `[${item.ip}]` : item.ip;
         
         if (CF_HTTPS_PORTS.includes(port)) {
             const wsNodeName = `${nodeName}-${port}-WS-TLS`;
-            const link = `${proto}://${user}@${item.ip}:${port}?encryption=none&security=tls&sni=${workerDomain}&fp=chrome&type=ws&host=${workerDomain}&path=${wsPath}${echSuffix}#${encodeURIComponent(wsNodeName)}`;
+            const link = `${proto}://${user}@${safeIP}:${port}?encryption=none&security=tls&sni=${workerDomain}&fp=chrome&type=ws&host=${workerDomain}&path=${wsPath}${echSuffix}#${encodeURIComponent(wsNodeName)}`;
             links.push(link);
         } else if (CF_HTTP_PORTS.includes(port)) {
             const wsNodeName = `${nodeName}-${port}-WS`;
-            const link = `${proto}://${user}@${item.ip}:${port}?encryption=none&security=none&type=ws&host=${workerDomain}&path=${wsPath}#${encodeURIComponent(wsNodeName)}`;
+            const link = `${proto}://${user}@${safeIP}:${port}?encryption=none&security=none&type=ws&host=${workerDomain}&path=${wsPath}#${encodeURIComponent(wsNodeName)}`;
             links.push(link);
         } else {
             const wsNodeName = `${nodeName}-${port}-WS-TLS`;
-            const link = `${proto}://${user}@${item.ip}:${port}?encryption=none&security=tls&sni=${workerDomain}&fp=chrome&type=ws&host=${workerDomain}&path=${wsPath}${echSuffix}#${encodeURIComponent(wsNodeName)}`;
+            const link = `${proto}://${user}@${safeIP}:${port}?encryption=none&security=tls&sni=${workerDomain}&fp=chrome&type=ws&host=${workerDomain}&path=${wsPath}${echSuffix}#${encodeURIComponent(wsNodeName)}`;
             links.push(link);
         }
     });
@@ -861,13 +821,12 @@ async function handleSubscriptionRequest(request, ctx, user, customDomain, piu, 
     }
 
     // 先并行启动两个上游取数，避免串行等待
+    const 过滤选项 = { ipv4Enabled, ipv6Enabled, ispMobile, ispUnicom, ispTelecom };
+
+    // 内置多源由「启用优选IP」控制；两个开关都开时只取一次
     const dynamicIPsPromise = epi
-        ? cachedUpstream(
-            `dynamic:${ipv4Enabled}:${ipv6Enabled}:${ispMobile}:${ispUnicom}:${ispTelecom}`,
-            ctx,
-            () => fetchDynamicIPs(ipv4Enabled, ipv6Enabled, ispMobile, ispUnicom, ispTelecom)
-        ).catch((error) => {
-            console.error('获取动态IP失败:', error);
+        ? fetchDefaultPreferredIPs(ctx, 过滤选项).catch((error) => {
+            console.error('获取内置优选IP失败:', error);
             return [];
         })
         : null;
@@ -875,12 +834,25 @@ async function handleSubscriptionRequest(request, ctx, user, customDomain, piu, 
     const egiIPsPromise = egi
         ? (piu
             ? cachedUpstream(`egi:${piu}`, ctx, () => fetchEGIPreferredIPs(piu))
-            : fetchDefaultPreferredIPs(ctx, { ipv4Enabled, ipv6Enabled, ispMobile, ispUnicom, ispTelecom })
+            : (epi ? Promise.resolve([]) : fetchDefaultPreferredIPs(ctx, 过滤选项))
         ).catch((error) => {
-            console.error('获取优选IP失败:', error);
+            console.error('获取GitHub优选失败:', error);
             return [];
         })
         : null;
+
+    // 内置源与自定义列表可能重叠，按 IP+端口统一去重
+    const ipSeen = new Set();
+    const dedupeIPList = (list) => {
+        const out = [];
+        for (const item of list) {
+            const key = `${String(item.ip).toLowerCase()}:${item.port || ''}`;
+            if (ipSeen.has(key)) continue;
+            ipSeen.add(key);
+            out.push(item);
+        }
+        return out;
+    };
 
     // 原生地址
     const nativeList = [{ ip: workerDomain, isp: '原生地址' }];
@@ -894,7 +866,7 @@ async function handleSubscriptionRequest(request, ctx, user, customDomain, piu, 
 
     // 优选IP（取数已在上面并行启动，这里只等结果）
     if (dynamicIPsPromise) {
-        const dynamicIPList = await dynamicIPsPromise;
+        const dynamicIPList = dedupeIPList(await dynamicIPsPromise);
         if (dynamicIPList.length > 0) {
             await addNodesFromList(dynamicIPList);
         }
@@ -902,7 +874,7 @@ async function handleSubscriptionRequest(request, ctx, user, customDomain, piu, 
 
     // GitHub优选 / 优选API（取数已在上面并行启动，这里只等结果）
     if (egiIPsPromise) {
-        const IP列表 = await egiIPsPromise;
+        const IP列表 = dedupeIPList(await egiIPsPromise);
         if (IP列表.length > 0) {
             const hasProtocol = evEnabled || etEnabled || vmEnabled;
             const useVL = hasProtocol ? evEnabled : true;
@@ -1517,9 +1489,9 @@ function generateHomePage(scuValue) {
             </div>
             
             <div class="form-group" id="githubUrlGroup" style="margin-top: 12px;">
-                <label>GitHub优选URL（可选）</label>
-                <input type="text" id="githubUrl" placeholder="留空则使用默认地址" style="font-size: 15px;">
-                <small style="display: block; margin-top: 6px; color: #86868b; font-size: 13px;">自定义优选IP列表来源URL，留空则使用内置的多个定时更新源（含上海电信、三网优选等）</small>
+                <label>GitHub优选来源（可选）</label>
+                <textarea id="githubUrl" rows="3" placeholder="每行一个 URL，可填多个；留空则使用内置源" style="font-size: 15px; width: 100%; min-height: 70px; resize: vertical;"></textarea>
+                <small style="display: block; margin-top: 6px; color: #86868b; font-size: 13px;">支持多个来源 URL（每行一个），也可直接粘贴 IP:端口#备注；留空则使用内置的多个定时更新源（含上海电信、三网优选等）</small>
             </div>
             
             <div class="form-group" style="margin-top: 24px;">
