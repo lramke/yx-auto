@@ -58,13 +58,6 @@ const defaultIPSources = [
         cap: 10
     },
     {
-        name: 'BestCFip',
-        label: 'BestCFip',
-        url: 'https://raw.githubusercontent.com/joname1/BestCFip/refs/heads/main/ipv4.txt', // 每日多次
-        cap: 15,
-        skipLines: /^ipv4\.list\.updated\.at/i
-    },
-    {
         name: 'IPDB优选v6',
         label: 'IPv6',
         url: 'https://raw.githubusercontent.com/ymyuuu/IPDB/refs/heads/main/BestCF/bestcfv6.txt', // 每日多次

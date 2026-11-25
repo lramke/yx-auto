@@ -22,9 +22,10 @@ GitHub: https://github.com/byJoey/yx-auto
 | [ahang39/router](https://github.com/ahang39/router) | 每日 | 上海电信实测优选 |
 | [yuanxiawan/cfipv4db](https://github.com/yuanxiawan/cfipv4db) | 约 30 分钟 | 移动/联通/电信三网，按时延排序，受运营商筛选控制 |
 | [ymyuuu/IPDB](https://github.com/ymyuuu/IPDB) | 每日多次 | 反代优选 IP 库 |
-| [joname1/BestCFip](https://github.com/joname1/BestCFip) | 每日多次 | 自动采集优选 IP |
 | [ymyuuu/IPDB v6](https://github.com/ymyuuu/IPDB) | 每日多次 | IPv6 优选列表 |
 | [joname1/BestCFip v6](https://github.com/joname1/BestCFip) | 每日多次 | IPv6 优选列表 |
+
+> BestCFip 的 IPv4 列表在 2026-11-25 实测中下行中位数仅 0.22 MB/s，15 条下发节点中 10 条低于 0.3 MB/s，已移除；其 IPv6 列表实测正常，保留。
 
 传入 `piu` 后使用自定义来源，支持多个 URL（每行一个或英文逗号分隔）与直接粘贴的 `IP:端口#备注`；所有来源合并后按 IP+端口去重，重名节点自动加序号。`egi=no` 时不添加自定义来源。
 
