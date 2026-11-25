@@ -15,17 +15,16 @@ GitHub: https://github.com/byJoey/yx-auto
 
 ## 默认优选IP来源
 
-「启用优选IP」开启时会并行拉取以下 GitHub 定时更新源（`egi=yes` 且 `piu` 留空时也会兜底使用），结果缓存 10 分钟，每个源 raw 优先、超时后自动改用 jsDelivr 镜像，并在生成节点时去重、限制每个源的条数：
+「启用优选IP」开启时会并行拉取以下来源（`egi=yes` 且 `piu` 留空时也会兜底使用），结果缓存 10 分钟，每个动态源 raw 优先、超时后自动改用 jsDelivr 镜像，并在生成节点时去重、限制每个源的条数：
 
 | 来源 | 更新频率 | 说明 |
 | --- | --- | --- |
-| [ahang39/router](https://github.com/ahang39/router) | 每日 | 上海电信实测优选 |
 | [yuanxiawan/cfipv4db](https://github.com/yuanxiawan/cfipv4db) | 约 30 分钟 | 移动/联通/电信三网，按时延排序，受运营商筛选控制 |
-| [ymyuuu/IPDB](https://github.com/ymyuuu/IPDB) | 每日多次 | 反代优选 IP 库 |
-| [ymyuuu/IPDB v6](https://github.com/ymyuuu/IPDB) | 每日多次 | IPv6 优选列表 |
-| [joname1/BestCFip v6](https://github.com/joname1/BestCFip) | 每日多次 | IPv6 优选列表 |
+| [LancelotRar/best-cf-ips](https://github.com/LancelotRar/best-cf-ips) | 每日扫描 | 实测高速扫描结果 top50，多数条目可跑到 78–127 Mbps |
+| 实测高速（内置静态） | 随版本更新 | 2026-11-25 用 10MB 单线程实测的 IPv4 快照，均 ≥78 Mbps |
+| 实测高速v6（内置静态） | 随版本更新 | 同日实测的 IPv6 快照，均 ≥116 Mbps |
 
-> BestCFip 的 IPv4 列表在 2026-11-25 实测中下行中位数仅 0.22 MB/s，15 条下发节点中 10 条低于 0.3 MB/s，已移除；其 IPv6 列表实测正常，保留。
+> 2026-11-25 用 10MB 单线程复测后调整了源列表：短距离的 512KB 测速会受 TCP 慢启动影响严重低估实际带宽。上海电信、IPDB（v4/v6）、BestCFip（v4/v6）的条目实测普遍达不到 50 Mbps，已移除；BestCFip IPv4 在更早一轮已移除。高速条目集中在少数网段，保留的静态列表用于在动态源失效时兜底，若后续实测变慢可直接删除或更新。
 
 传入 `piu` 后使用自定义来源，支持多个 URL（每行一个或英文逗号分隔）与直接粘贴的 `IP:端口#备注`；所有来源合并后按 IP+端口去重，重名节点自动加序号。`egi=no` 时不添加自定义来源。
 

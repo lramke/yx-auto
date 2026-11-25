@@ -31,17 +31,41 @@ const directDomains = [
     { domain: "cf.877771.xyz" }
 ];
 
-// 内置默认优选IP来源（均为 GitHub 定时更新）
+// 内置默认优选IP来源
 // - isp：整份列表适用的运营商（缺省 all），用于响应 ipv4/ipv6 与运营商开关
 // - cap：每个源最多取多少条，避免订阅节点过多
 // - format：isp-csv 表示带“线路名称”列的 CSV，其余按地址行解析
 // - skipLines：跳过列表里的表头/说明行
+// - static：内置实测高速 IP，作为动态源失效时的兜底
 const defaultIPSources = [
     {
-        name: '上海电信',
-        label: '上海电信',
-        url: 'https://raw.githubusercontent.com/ahang39/router/refs/heads/main/all.txt', // 每日自动更新
-        isp: 'telecom',
+        name: '实测高速',
+        label: '高速',
+        // 2026-11-25 用 10MB 单线程实测，以下 IPv4 均 ≥78 Mbps
+        static: [
+            '104.18.33.225', '104.18.40.165', '104.18.41.50', '172.64.147.154',
+            '104.18.44.95', '172.64.159.162', '104.18.42.187', '172.64.154.17',
+            '172.64.157.95', '104.18.42.163', '104.18.44.151', '104.18.46.234',
+            '172.64.153.27', '104.18.46.105', '104.18.32.213', '104.18.45.98',
+            '172.64.148.35'
+        ],
+        cap: 15
+    },
+    {
+        name: '实测高速v6',
+        label: '高速V6',
+        // 2026-11-25 用 10MB 单线程实测，以下 IPv6 均 ≥116 Mbps
+        static: [
+            '2a06:98c1:310e::b224:6a5b', '2a06:98c1:310b::3198:4a8b',
+            '2606:4700:4402::e1ae:fdde', '2606:4700:4408::ea2e:299a',
+            '2606:4700:440b::e216:26ad', '2606:4700:440c::b44e:4fe7'
+        ],
+        cap: 6
+    },
+    {
+        name: 'Lancelot优选',
+        label: 'Lancelot',
+        url: 'https://raw.githubusercontent.com/LancelotRar/best-cf-ips/refs/heads/main/best-cf-ip-scanned-top50.txt', // 每日扫描更新
         cap: 10
     },
     {
@@ -50,25 +74,6 @@ const defaultIPSources = [
         url: 'https://raw.githubusercontent.com/yuanxiawan/cfipv4db/refs/heads/main/cfip.csv', // 约 30 分钟更新
         format: 'isp-csv',
         cap: 15
-    },
-    {
-        name: 'IPDB优选',
-        label: 'IPDB',
-        url: 'https://raw.githubusercontent.com/ymyuuu/IPDB/refs/heads/main/BestCF/bestcfv4.txt', // 每日多次
-        cap: 10
-    },
-    {
-        name: 'IPDB优选v6',
-        label: 'IPv6',
-        url: 'https://raw.githubusercontent.com/ymyuuu/IPDB/refs/heads/main/BestCF/bestcfv6.txt', // 每日多次
-        cap: 10
-    },
-    {
-        name: 'BestCFip v6',
-        label: 'IPv6',
-        url: 'https://raw.githubusercontent.com/joname1/BestCFip/refs/heads/main/ipv6.txt', // 每日多次
-        cap: 15,
-        skipLines: /^ipv6\.list\.updated\.at/i
     }
 ];
 
@@ -472,6 +477,9 @@ async function fetchSourceText(url, timeoutMs) {
 
 // 拉取单个默认源：raw 优先，超时或失败后用 jsDelivr 镜像
 async function fetchDefaultIPSource(source) {
+    if (Array.isArray(source.static)) {
+        return source.static.map(ip => ({ ip, port: 443, name: source.name }));
+    }
     const mirror = mirrorURL(source.url);
     const attempts = [fetchSourceText(source.url, 2500)];
     if (mirror) attempts.push(fetchSourceText(mirror, 4000));
@@ -503,13 +511,14 @@ async function fetchDefaultPreferredIPs(ctx, opts) {
     };
 
     const sources = defaultIPSources.filter(source => ispAllowed(source.isp || 'all'));
-    const results = await Promise.all(sources.map(source =>
-        cachedUpstream(`default-src:v1:${source.url}`, ctx, () => fetchDefaultIPSource(source))
+    const results = await Promise.all(sources.map(source => {
+        const sourceKey = source.url || `static:${source.name}`;
+        return cachedUpstream(`default-src:v1:${sourceKey}`, ctx, () => fetchDefaultIPSource(source))
             .catch((error) => {
                 console.error('获取默认优选源失败:', source.name, error);
                 return [];
-            })
-    ));
+            });
+    }));
 
     const seen = new Set();
     const nameCount = new Map();
@@ -928,8 +937,9 @@ function generateClashConfig(links) {
     links.forEach((link, index) => {
         const name = decodeURIComponent(link.split('#')[1] || `节点${index + 1}`);
         proxyNames.push(name);
-        const server = link.match(/@([^:]+):(\d+)/)?.[1] || '';
-        const port = link.match(/@[^:]+:(\d+)/)?.[1] || '443';
+        const hostMatch = link.match(/@(\[[^\]]+\]|[^:]+):(\d+)/);
+        const server = (hostMatch?.[1] || '').replace(/^\[|\]$/g, '');
+        const port = hostMatch?.[2] || '443';
         const uuid = link.match(/vless:\/\/([^@]+)@/)?.[1] || '';
         const tls = link.includes('security=tls');
         const path = link.match(/path=([^&#]+)/)?.[1] || '/';
@@ -977,7 +987,11 @@ function generateSurgeConfig(links) {
     let config = '[Proxy]\n';
     links.forEach(link => {
         const name = decodeURIComponent(link.split('#')[1] || '节点');
-        config += `${name} = vless, ${link.match(/@([^:]+):(\d+)/)?.[1] || ''}, ${link.match(/@[^:]+:(\d+)/)?.[1] || '443'}, username=${link.match(/vless:\/\/([^@]+)@/)?.[1] || ''}, tls=${link.includes('security=tls')}, ws=true, ws-path=${link.match(/path=([^&#]+)/)?.[1] || '/'}, ws-headers=Host:${link.match(/host=([^&#]+)/)?.[1] || ''}\n`;
+        const hostMatch = link.match(/@(\[[^\]]+\]|[^:]+):(\d+)/);
+        const server = (hostMatch?.[1] || '').replace(/^\[|\]$/g, '');
+        const port = hostMatch?.[2] || '443';
+        const uuid = link.match(/vless:\/\/([^@]+)@/)?.[1] || '';
+        config += `${name} = vless, ${server}, ${port}, username=${uuid}, tls=${link.includes('security=tls')}, ws=true, ws-path=${link.match(/path=([^&#]+)/)?.[1] || '/'}, ws-headers=Host:${link.match(/host=([^&#]+)/)?.[1] || ''}\n`;
     });
     config += '\n[Proxy Group]\nPROXY = select, ' + links.map((_, i) => decodeURIComponent(links[i].split('#')[1] || `节点${i + 1}`)).join(', ') + '\n';
     return config;
