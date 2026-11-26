@@ -78,6 +78,8 @@ https://your-worker.workers.dev/{UUID}/sub?domain=your-domain.com&epd=yes&epi=ye
 - `ipv4/ipv6` - IP版本选择（默认都开启）
 - `ispMobile/ispUnicom/ispTelecom` - 运营商筛选（默认都开启）
 - `target` - 输出格式（base64/clash/surge/quantumult）
+- `path` - 自定义 WS 路径（默认 `/`）
+- `ws80` - 设为 yes 时，为带端口的 IP 额外生成 80 端口 WS（无 TLS）节点，例如 `高速01-80-WS`；适合源站只提供 80 端口 WS 的场景
 
 ## 注意事项
 
